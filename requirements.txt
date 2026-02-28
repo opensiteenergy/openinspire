@@ -1,0 +1,9 @@
+numpy
+pyyaml
+requests
+beautifulsoup4
+geopandas
+pyarrow
+pyogrio
+gdal
+selenium

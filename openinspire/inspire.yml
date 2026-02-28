@@ -1,0 +1,30 @@
+# ----------------------------------------------------
+# inspire.yml
+# yml configuration file for downloading INSPIRE land parcels
+# ----------------------------------------------------
+
+# Link to this GitHub code repository 
+# This can be used to host yml files on an open data server and automatically install required library just-in-time
+codebase:
+  https://github.com/SH801/openinspire.git
+
+# Link to Inspire webpages
+sources:
+  england-wales:
+    url: "https://use-land-property-data.service.gov.uk/datasets/inspire/download"
+    strategy: "simple_web"
+    ext: ".zip"
+    match_text: ["gml", "land"]
+  scotland:
+    url: "https://ros-inspire.themapcloud.com"
+    strategy: "selenium_web"
+    ext: ".zip"
+
+# Directory where temporary data is stored
+cache_dir:
+ ./cache
+
+# The exact name and extension of the final file generated
+output:
+  inspire.gpkg
+
