@@ -63,6 +63,7 @@ class OpenINSPIRE:
                 self.handle_simple_web(cfg)
 
         self.amalgamate_gpkgs(self.cache_dir, output_file)
+        # exit()
         self.convert_to_utm30n(output_file)
 
         if self.area:
@@ -478,7 +479,7 @@ class OpenINSPIRE:
             options.binary_location = "/Applications/Chromium.app/Contents/MacOS/Chromium"
         else:
             service = Service("/usr/bin/chromedriver")
-            options.binary_location = "/usr/bin/chromium-browser"
+            options.binary_location = "/usr/bin/chromium"
 
         driver = webdriver.Chrome(service=service, options=options)
 
