@@ -7,3 +7,4 @@ pyarrow
 pyogrio
 gdal
 selenium
+webdriver-manager

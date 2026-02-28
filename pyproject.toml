@@ -20,7 +20,8 @@ dependencies = [
   "pyarrow",
   "pyogrio",
   "gdal",
-  "selenium"
+  "selenium",
+  "webdriver-manager",
 ]
 
 [project.scripts]

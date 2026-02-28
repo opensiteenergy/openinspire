@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+build/
 env/
 venv/
 .venv/
@@ -11,6 +12,7 @@ build/
 dist/
 *.egg-info/
 .eggs/
+open_inspire.log
 
 # --- Testing & Coverage ---
 .tox/
