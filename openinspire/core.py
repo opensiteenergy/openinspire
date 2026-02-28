@@ -204,7 +204,7 @@ class OpenINSPIRE:
         FROM merged_data
         """
 
-        logger.info(f"Applying 0.1m buffer to {target_gpkg} in-place...")
+        logger.info(f"Applying 0.1m buffer to {target_gpkg} in-place to eliminate slivers and amalgamate neighbouring polygons...")
         
         try:
             # Run ogr2ogr to create the buffered temp file
