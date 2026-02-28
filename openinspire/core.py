@@ -1,4 +1,5 @@
 import os
+import platform
 import sys
 import yaml
 import requests
@@ -396,7 +397,6 @@ class OpenINSPIRE:
 
         if os.path.exists(gpkg_path): return f"SKIPPED: {filename}"
 
-
         try:
             # 1. Download
 
@@ -472,7 +472,16 @@ class OpenINSPIRE:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+        if platform.system() == "Darwin":
+            service = Service("/opt/homebrew/bin/chromedriver")
+            options.binary_location = "/Applications/Chromium.app/Contents/MacOS/Chromium"
+        else:
+            service = Service("/usr/bin/chromedriver")
+            options.binary_location = "/usr/bin/chromium-browser"
+
+        driver = webdriver.Chrome(service=service, options=options)
+
         try:
             driver.get(url)
             wait = WebDriverWait(driver, 15)
