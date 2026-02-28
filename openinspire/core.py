@@ -409,6 +409,8 @@ class OpenINSPIRE:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
 
+            logger.info(f"PROCESSING: {filename}")
+
             # 2. Explicit Unzip (using your logic)
             extracted_files = []
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -426,8 +428,6 @@ class OpenINSPIRE:
             # 3. Convert
             # We target the primary data file (GML or SHP)
             primary_file = next((f for f in extracted_files if f.lower().endswith(('.gml', '.shp'))), None)
-
-            logger.info(f"CONVERTING: {filename}")
         
             if primary_file:
                 subprocess.run([
