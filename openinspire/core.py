@@ -396,8 +396,12 @@ class OpenINSPIRE:
 
         if os.path.exists(gpkg_path): return f"SKIPPED: {filename}"
 
+
         try:
             # 1. Download
+
+            logger.info(f"DOWNLOADING: {filename}")
+
             client = session if session else requests
             r = client.get(url, stream=True, timeout=60)
             r.raise_for_status()
@@ -422,7 +426,9 @@ class OpenINSPIRE:
             # 3. Convert
             # We target the primary data file (GML or SHP)
             primary_file = next((f for f in extracted_files if f.lower().endswith(('.gml', '.shp'))), None)
-            
+
+            logger.info(f"CONVERTING: {filename}")
+        
             if primary_file:
                 subprocess.run([
                     "ogr2ogr", "-f", "GPKG", gpkg_path, primary_file,
