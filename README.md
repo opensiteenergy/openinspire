@@ -38,16 +38,26 @@ The `.yml` configuration file should have the following format:
 codebase:
   https://github.com/opensiteenergy/openinspire.git
 
-# Link to Inspire webpage
-source:
-  https://use-land-property-data.service.gov.uk/datasets/inspire/download
+# Link to Inspire webpages
+sources:
+  england-wales:
+    url: "https://use-land-property-data.service.gov.uk/datasets/inspire/download"
+    strategy: "simple_web"
+    ext: ".zip"
+    match_text: ["gml", "land"]
 
 # Directory where temporary data is stored
 cache_dir:
-  ./tile_cache
+ cache/inspire-land-parcels--england-wales
 
 # The exact name and extension of the final file generated
 output:
-  inspire.gpkg
+  solar-land-parcels-too-small--england-wales.gpkg
+
+# Filters the final result values by area in hectares
+area:
+  # Maximum area
+  max: 
+    1
 ```
 
