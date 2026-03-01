@@ -1,4 +1,5 @@
 numpy
+shapely
 pyyaml
 requests
 beautifulsoup4

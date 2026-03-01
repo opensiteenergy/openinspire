@@ -1,5 +1,10 @@
+import geopandas as gpd
+import json
+import math
+import numpy as np
 import os
 import platform
+import re
 import sys
 import yaml
 import requests
@@ -12,8 +17,10 @@ import concurrent.futures
 import logging
 import uuid
 import importlib.resources as pkg_resources
-from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
+from importlib import resources
+from shapely.geometry import box
+from urllib.parse import urljoin, urlparse
 
 # Selenium imports
 from selenium import webdriver
@@ -63,87 +70,12 @@ class OpenINSPIRE:
                 self.handle_simple_web(cfg)
 
         self.amalgamate_gpkgs(self.cache_dir, output_file)
-        # exit()
         self.convert_to_utm30n(output_file)
 
         if self.area:
             self.apply_post_amalgamation_filter(output_file)
             self.apply_simple_buffer(output_file)
             self.dissolve_overlaps(output_file)
-
-    def add_filtered_holes(self, output_file):
-        """
-        Extracts 'valid' holes, creates a separate file for them with unique IDs,
-        then merges them back into the main file to fill 'trash' gaps.
-        """
-        holes_file = output_file.replace(".gpkg", "_holes.gpkg")
-        temp_output = f"temp_final_{uuid.uuid4().hex}.gpkg"
-        
-        # 1. Generate the filtered holes file first
-        # This uses your min/max area logic to define what is a 'valid' hole
-        self.export_valid_holes(output_file, holes_file)
-        
-        # 2. Add a unique ID to the holes file (using SQLite rowid)
-        # This ensures every hole is a distinct entity
-        logger.info("Standardizing hole IDs...")
-        update_sql = "ALTER TABLE valid_holes ADD COLUMN hole_id TEXT;"
-        # We'll use a simple update to set a unique string ID
-        set_id_sql = "UPDATE valid_holes SET hole_id = 'HOLE_' || rowid;"
-        
-        try:
-            # Run the hole-filling Union logic
-            # We take the main file and UNION it with the 'valid' holes.
-            # This fills the SMALL holes (trash) because they aren't in the holes file,
-            # but preserves LARGE holes by turning them into solid polygons that
-            # touch the main mass boundaries.
-            
-            # We use ST_UnaryUnion(ST_Collect) for speed and ST_Dump to 
-            # ensure we return to clean, individual polygons.
-            sql = f"""
-            SELECT (ST_Dump(ST_UnaryUnion(ST_Collect(geom)))).geom AS geom
-            FROM (
-                SELECT geom FROM merged_data
-                UNION ALL
-                SELECT geom FROM (
-                    SELECT ST_BuildArea(ST_InteriorRingN(poly.geom, rings.n)) AS geom
-                    FROM (
-                        SELECT (ST_Dump(geom)).geom AS geom, rowid 
-                        FROM merged_data
-                    ) AS poly
-                    JOIN (
-                        SELECT n FROM (
-                            WITH RECURSIVE cnt(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM cnt LIMIT 100)
-                            SELECT n FROM cnt
-                        )
-                    ) AS rings ON rings.n <= ST_NumInteriorRings(poly.geom)
-                ) AS holes
-                WHERE ST_Area(holes.geom) >= {self.area.get('min', 0) * 10000}
-            )
-            """
-
-            cmd = [
-                "ogr2ogr",
-                "-f", "GPKG",
-                temp_output,
-                output_file,
-                "-dialect", "sqlite",
-                "-sql", sql,
-                "-nlt", "PROMOTE_TO_MULTI",
-                "-nln", "merged_data",
-                "-overwrite"
-            ]
-            
-            logger.info("Merging valid holes back into master and filling slivers...")
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
-            
-            # In-place swap
-            os.replace(temp_output, output_file)
-            logger.info(f"Final in-place processing complete for {output_file}")
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to add filtered holes: {e.stderr}")
-            if os.path.exists(temp_output): os.remove(temp_output)
-            raise
 
     def convert_to_utm30n(self, output_file):
         """
@@ -237,61 +169,108 @@ class OpenINSPIRE:
             if os.path.exists(temp_gpkg):
                 os.remove(temp_gpkg)
             raise
+
+    def generate_processing_grid(self, clipping_url, grid_size, output_path="processing_grid.gpkg"):
+        # 1. Fetch bounds from the remote URL
+        logger.info(f"Fetching extent from: {clipping_url}")
+        gdf_meta = gpd.read_file(clipping_url)
+        minx, miny, maxx, maxy = gdf_meta.total_bounds
+        crs = gdf_meta.crs
+
+        # 2. Create the grid coordinates
+        x_coords = np.arange(minx, maxx, grid_size)
+        y_coords = np.arange(miny, maxy, grid_size)
+
+        grid_cells = []
+        for x in x_coords:
+            for y in y_coords:
+                # Create a square/rectangular cell
+                grid_cells.append(box(x, y, x + grid_size, y + grid_size))
+
+        # 3. Build GeoDataFrame and save
+        grid_gdf = gpd.GeoDataFrame({'geometry': grid_cells}, crs=crs)
         
-    def dissolve_overlaps(self, input_gpkg, batch_size=1000000):
+        # Optional: Filter only cells that actually intersect the clipping layer
+        # This prevents creating grid cells over the open ocean
+        logger.info("Filtering grid to intersection...")
+        grid_gdf = grid_gdf[grid_gdf.intersects(gdf_meta.unary_union)]
+
+        grid_gdf.to_file(output_path, driver="GPKG")
+        logger.info(f"Successfully saved {len(grid_gdf)} cells to {output_path}")
+
+    def dissolve_overlaps(self, input_gpkg, grid_size_meters=50000):
         """
-        Runs ST_Union in batches. Uses -so -al to reliably get feature counts
-        across different GDAL versions.
+        Runs ST_Union on grid squares
         """
-        logger.info(f"Starting batch ST_Union (dissolve) on {input_gpkg}...")
-        temp_output = f"dissolved_temp_{uuid.uuid4().hex}.gpkg"
-        
-        # 1. Get total row count using metadata summary (-so)
-        count_cmd = ["ogrinfo", "-so", "-al", input_gpkg]
-        res = subprocess.run(count_cmd, capture_output=True, text=True)
-        
-        total = 0
-        for line in res.stdout.splitlines():
-            if "feature count:" in line.lower():
-                total = int(line.split(':')[-1].strip())
-                break
 
-        if total == 0:
-            logger.error("Could not find feature count in ogrinfo output.")
-            return
+        clipping_url = resources.files("openinspire").joinpath("clipping-master-EPSG-25830.gpkg")
+        processing_grid = "processing_grid.gpkg"
+        processing_grid_size = 50000
+        if not os.path.exists(processing_grid):
+            self.generate_processing_grid(clipping_url, processing_grid_size, processing_grid)
+        grid_abs = os.path.abspath(processing_grid)
+        data_abs = os.path.abspath(input_gpkg)
 
-        logger.info(f"Total features to process: {total}")
+        temp_output = f"testing.gpkg"
+        # temp_output = f"dissolved_temp_{uuid.uuid4().hex}.gpkg"
 
-        # 2. Process in batches
-        for offset in range(0, total, batch_size):
-            actual_end = min(offset + batch_size, total)
-            logger.info(f"Dissolving batch: {offset} to {actual_end}...")
-            
-            # The subquery pattern to bypass the aggregate error
-            sql = f"""
-            SELECT ST_UnaryUnion(
-                ST_Collect(
-                    fixed_geom
-                )
-            ) AS geom 
-            FROM (
-                SELECT ST_MakeValid(ST_SnapToGrid(geom, 0.1)) AS fixed_geom
-                FROM merged_data 
-                LIMIT {batch_size} OFFSET {offset}
-            )
-            WHERE fixed_geom IS NOT NULL 
-            AND ST_Dimension(fixed_geom) = 2
-            AND ST_Area(fixed_geom) > 0.0001
-            """
-            
+        extent_raw = subprocess.check_output(["ogrinfo", "-json", "-so", input_gpkg, "merged_data"], text=True)
+        extent_json = json.loads(extent_raw)
+        extent = extent_json['layers'][0]['geometryFields'][0]['extent']
+        minx, miny, maxx, maxy = extent
+
+        # Add processing_grid to input gpkg if not already added 
+        # This makes SQLite queries straightfoward
+        layer_info = subprocess.check_output(["ogrinfo", "-so", "-q", input_gpkg], text=True)
+        if "processing_grid" not in layer_info:
+            logger.info("Layer 'processing_grid' not found. Adding it now...")
             subprocess.run([
+                "ogr2ogr", "-update", "-append", 
+                input_gpkg, processing_grid, 
+                "-nln", "processing_grid"
+            ], check=True)
+        else:
+            logger.info("Layer 'processing_grid' already exists. Skipping copy.")
+
+        # 3. Get FIDs that actually overlap the data area
+        sql_fids = f"SELECT fid FROM processing_grid WHERE ST_Intersects(geom, BuildMBR({minx}, {miny}, {maxx}, {maxy}))"
+        fids_raw = subprocess.check_output(["ogrinfo", "-sql", sql_fids, "-q", input_gpkg], text=True)
+        fids = re.findall(r"OGRFeature\(SELECT\):(\d+)", fids_raw)
+        total_cells = len(fids)
+
+        logger.info(f"Starting dissolve using {total_cells} grid cells from {processing_grid}")
+
+        # 2. Iterate through each grid cell by FID
+        for index in range(len(fids)):
+            fid = int(fids[index])
+            logger.info(f"Processing grid cell {index + 1}/{total_cells}")
+
+            sql = f"""
+            SELECT ST_Union(ST_Intersection(ST_MakeValid(d.geom), g.geom)) AS geom 
+            FROM merged_data d 
+            JOIN processing_grid g ON ST_Intersects(d.geom, g.geom) 
+            WHERE g.fid = {fid} 
+            GROUP BY g.fid
+            """
+
+            cmd = [
                 "ogr2ogr", "-update", "-append", "-f", "GPKG", temp_output, input_gpkg,
                 "-dialect", "sqlite",
                 "-sql", sql,
+                "-explodecollections",
                 "-nln", "merged_data",
-                "-nlt", "PROMOTE_TO_MULTI",
-                "-lco", "GEOMETRY_NAME=geom"
-            ], check=True)
+                "-nlt", "POLYGON"
+            ]
+            
+            # Setup the output table on the first pass
+            if not os.path.exists(temp_output):
+                cmd.extend(["-lco", "GEOMETRY_NAME=geom", "-lco", "SPATIAL_INDEX=YES"])
+
+            try:
+                subprocess.run(cmd, check=True, capture_output=True)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"ogr2ogr failed {e}")
+                continue
 
         # 3. Swap files
         if os.path.exists(temp_output):
@@ -299,72 +278,6 @@ class OpenINSPIRE:
                 os.remove(input_gpkg)
             os.rename(temp_output, input_gpkg)
             logger.info("dissolve_overlaps complete.")
-
-    def export_valid_holes(self, input_gpkg, output_file):
-        """
-        Extracts interior rings and ensures a unique ID per hole to avoid
-        GPKG Primary Key constraint failures.
-        """
-        where_parts = []
-        min_ha = self.area.get('min')
-        max_ha = self.area.get('max')
-        min_sqm = self.area.get('min', 0) * 10000
-
-        if min_ha is not None:
-            where_parts.append(f"ST_Area(geom) >= {min_ha * 10000}")
-        if max_ha is not None:
-            where_parts.append(f"ST_Area(geom) <= {max_ha * 10000}")
-        
-        sql_where = " AND ".join(where_parts) if where_parts else "1=1"
-
-        logger.info("Extracting valid holes...")
-
-        # We add row_number() as 'fid' to give ogr2ogr a unique primary key
-        sql = f"""
-        WITH RECURSIVE
-            numbers(n) AS (
-                SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 500
-            ),
-            exploded_parts AS (
-                SELECT ST_GeometryN(geom, n.n) AS part_geom
-                FROM merged_data
-                JOIN numbers n ON n.n <= ST_NumGeometries(geom)
-            )
-            SELECT 
-                ST_BuildArea(ST_InteriorRingN(part_geom, n.n)) AS geom
-            FROM exploded_parts
-            JOIN numbers n ON n.n <= ST_NumInteriorRing(part_geom)
-        """
-
-        try:
-            cmd = [
-                "ogr2ogr",
-                "-f", "GPKG",
-                output_file,
-                input_gpkg,
-                "-dialect", "sqlite",
-                "-sql", sql,
-                "-nlt", "MULTIPOLYGON",
-                "-nln", "valid_holes",
-                "-overwrite"
-            ]
-            
-            # Adding a specific flag to tell OGR which column is the FID
-            cmd.extend(["-preserve_fid", "-oo", "FID=fid"])
-            
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
-            logger.info(f"Holes exported successfully to {output_file}")
-
-        except subprocess.CalledProcessError as e:
-            # Final safety check for the singular/plural naming mess
-            if "no such function: ST_NumInteriorRing" in e.stderr:
-                logger.warning("Detected plural ST_NumInteriorRings requirement. Retrying...")
-                new_sql = sql.replace("ST_NumInteriorRing", "ST_NumInteriorRings")
-                # Recursive call with fixed SQL or just modify the string and rerun cmd
-                # For brevity, let's ensure the user knows to check this if it fails again.
-            
-            logger.error(f"Hole extraction failed: {e.stderr}")
-            raise
                 
     def handle_simple_web(self, cfg):
         links = self._get_links_from_page(cfg)

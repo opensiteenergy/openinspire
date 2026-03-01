@@ -13,6 +13,7 @@ authors = [
 ]
 dependencies = [
   "numpy",
+  "shapely",
   "pyyaml",
   "requests",
   "beautifulsoup4",
