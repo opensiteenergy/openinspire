@@ -211,8 +211,7 @@ class OpenINSPIRE:
         grid_abs = os.path.abspath(processing_grid)
         data_abs = os.path.abspath(input_gpkg)
 
-        temp_output = f"testing.gpkg"
-        # temp_output = f"dissolved_temp_{uuid.uuid4().hex}.gpkg"
+        temp_output = f"dissolved_temp_{uuid.uuid4().hex}.gpkg"
 
         extent_raw = subprocess.check_output(["ogrinfo", "-json", "-so", input_gpkg, "merged_data"], text=True)
         extent_json = json.loads(extent_raw)
