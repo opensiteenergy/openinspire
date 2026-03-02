@@ -256,6 +256,8 @@ class OpenINSPIRE:
                 "ogr2ogr", "-update", "-append", "-f", "GPKG", temp_output, input_gpkg,
                 "-dialect", "sqlite",
                 "-sql", sql,
+                "-a_srs", "EPSG:25830",
+                "-t_srs", "EPSG:25830",
                 "-explodecollections",
                 "-nln", "merged_data",
                 "-nlt", "POLYGON"
